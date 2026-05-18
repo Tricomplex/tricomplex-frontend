@@ -28,10 +28,11 @@ const Login = () => {
     setParams(next);
   };
 
-  const getErrorMessage = (err: any) => {
+  const getErrorMessage = (err: unknown) => {
+    const error = err as { errors?: Array<{ longMessage?: string; message?: string }> };
     return (
-      err?.errors?.[0]?.longMessage ||
-      err?.errors?.[0]?.message ||
+      error.errors?.[0]?.longMessage ||
+      error.errors?.[0]?.message ||
       "Tente novamente em instantes."
     );
   };
