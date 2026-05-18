@@ -3,6 +3,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Download,
+  ExternalLink,
   FileCode,
   FileText,
   Loader2,
@@ -11,17 +12,35 @@ import {
   Upload,
 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { toast } from "@/hooks/use-toast";
-import { analyzeNFeMarkdown } from "@/lib/api";
+import { analyzeNFe, FriendlyItemReport, FriendlyReport, FriendlyTaxReport, NFeFriendlyResponse } from "@/lib/api";
 
 type Status = "idle" | "loading" | "done" | "error";
+
+const statusConfig = {
+  ok: { label: "OK", className: "bg-accent-soft text-accent border-accent/30" },
+  divergente: { label: "Divergente", className: "bg-destructive/10 text-destructive border-destructive/30" },
+  sem_regra: { label: "Sem regra", className: "bg-warning-soft text-warning border-warning/30" },
+  sem_imposto_na_nfe: { label: "Nao declarado", className: "bg-secondary text-muted-foreground border-border" },
+  revisao_manual: { label: "Revisao manual", className: "bg-warning-soft text-warning border-warning/30" },
+} as const;
+
+const formatBRL = (value: number | null | undefined) =>
+  value == null ? "-" : value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+
+const formatDate = (value: string | null | undefined) => {
+  if (!value) return "-";
+  const [year, month, day] = value.split("-");
+  return year && month && day ? `${day}/${month}/${year}` : value;
+};
 
 const Analise = () => {
   const [status, setStatus] = useState<Status>("idle");
   const [fileName, setFileName] = useState("");
-  const [markdown, setMarkdown] = useState("");
+  const [response, setResponse] = useState<NFeFriendlyResponse | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [analyzedAt, setAnalyzedAt] = useState("");
@@ -37,18 +56,18 @@ const Analise = () => {
     }
 
     setFileName(file.name);
-    setMarkdown("");
+    setResponse(null);
     setErrorMessage("");
     setStatus("loading");
 
     try {
-      const responseMarkdown = await analyzeNFeMarkdown(file);
-      setMarkdown(responseMarkdown);
+      const result = await analyzeNFe(file);
+      setResponse(result);
       setAnalyzedAt(new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }));
       setStatus("done");
       toast({
         title: "Analise concluida",
-        description: "A resposta em Markdown foi gerada com sucesso.",
+        description: `${result.dados.resumo.total_itens} item(ns) processado(s).`,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Nao foi possivel analisar a NF-e.";
@@ -78,13 +97,14 @@ const Analise = () => {
   const reset = () => {
     setStatus("idle");
     setFileName("");
-    setMarkdown("");
+    setResponse(null);
     setErrorMessage("");
     setAnalyzedAt("");
   };
 
   const downloadMarkdown = () => {
-    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    if (!response) return;
+    const blob = new Blob([buildMarkdown(response.relatorio)], { type: "text/markdown;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     const safeName = fileName.replace(/\.xml$/i, "") || "analise-nfe";
@@ -109,8 +129,7 @@ const Analise = () => {
             Envie sua nota fiscal eletronica
           </h1>
           <p className="mt-2 text-muted-foreground max-w-2xl">
-            Faca upload do XML e receba uma analise tributaria em linguagem clara,
-            com divergencias, valores corretos e fontes legais quando disponiveis.
+            Faca upload do XML e receba uma analise amigavel, estruturada e com fontes legais.
           </p>
         </div>
 
@@ -141,7 +160,7 @@ const Analise = () => {
                   </div>
                   <h3 className="font-display text-xl font-bold mt-6">Analisando sua NF-e...</h3>
                   <p className="mt-2 text-muted-foreground text-center max-w-sm">
-                    Extraindo o XML, consultando regras tributarias e preparando a resposta.
+                    Extraindo o XML, consultando regras e organizando a explicacao com IA.
                   </p>
                   <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
                     <FileCode className="h-4 w-4" /> {fileName}
@@ -157,7 +176,7 @@ const Analise = () => {
                   </h3>
                   <p className="mt-2 text-muted-foreground text-center max-w-md">
                     Aceitamos arquivos <code className="font-mono text-foreground bg-muted px-1.5 py-0.5 rounded text-xs">.xml</code> de NF-e.
-                    A resposta sera exibida em Markdown e podera ser baixada.
+                    O relatorio podera ser baixado em Markdown.
                   </p>
                   <Button variant="hero" size="lg" className="mt-6" type="button" asChild>
                     <span>Selecionar arquivo</span>
@@ -175,7 +194,7 @@ const Analise = () => {
           </Card>
         )}
 
-        {status === "done" && (
+        {status === "done" && response && (
           <section className="space-y-6 animate-fade-in-up">
             <Card className="bg-gradient-card shadow-soft overflow-hidden">
               <div className="flex flex-col gap-4 p-5 md:flex-row md:items-center md:justify-between md:p-6 border-b border-border/60">
@@ -200,14 +219,15 @@ const Analise = () => {
                 </div>
               </div>
 
-              <div className="p-5 md:p-6">
-                <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-primary">
-                  <Sparkles className="h-4 w-4" />
-                  Resposta gerada para revisao contabil
-                </div>
-                <MarkdownPreview markdown={markdown} />
+              <div className="grid gap-4 p-5 md:grid-cols-4 md:p-6">
+                <InfoCell label="NF-e" value={response.dados.cabecalho.numero || "-"} />
+                <InfoCell label="Emissao" value={formatDate(response.dados.cabecalho.data_emissao)} />
+                <InfoCell label="Itens" value={String(response.dados.resumo.total_itens)} />
+                <InfoCell label="Total" value={formatBRL(response.dados.cabecalho.valor_total)} highlight />
               </div>
             </Card>
+
+            <FriendlyReportView report={response.relatorio} />
           </section>
         )}
 
@@ -215,9 +235,7 @@ const Analise = () => {
           <Card className="p-8 text-center border-destructive/30 bg-destructive/5">
             <AlertCircle className="h-10 w-10 text-destructive mx-auto mb-3" />
             <h3 className="font-display font-bold">Nao foi possivel analisar a NF-e</h3>
-            {errorMessage && (
-              <p className="mt-2 text-sm text-muted-foreground break-words">{errorMessage}</p>
-            )}
+            {errorMessage && <p className="mt-2 text-sm text-muted-foreground break-words">{errorMessage}</p>}
             <Button variant="outline" className="mt-4" onClick={reset}>
               Tentar novamente
             </Button>
@@ -228,92 +246,188 @@ const Analise = () => {
   );
 };
 
-function MarkdownPreview({ markdown }: { markdown: string }) {
-  const blocks = markdown.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
-
+function InfoCell({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
   return (
-    <article className="max-w-none space-y-5 text-sm leading-7 text-foreground md:text-base">
-      {blocks.map((block, index) => (
-        <MarkdownBlock key={`${index}-${block.slice(0, 24)}`} block={block} />
-      ))}
-    </article>
+    <div className="rounded-lg border border-border bg-background/70 p-4">
+      <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{label}</div>
+      <div className={`mt-1 font-bold ${highlight ? "text-accent" : "text-foreground"}`}>{value}</div>
+    </div>
   );
 }
 
-function MarkdownBlock({ block }: { block: string }) {
-  if (block.startsWith("## ")) {
-    return (
-      <h2 className="font-display text-xl font-extrabold tracking-normal text-foreground md:text-2xl">
-        {renderInline(block.replace(/^##\s+/, ""))}
-      </h2>
-    );
-  }
+function FriendlyReportView({ report }: { report: FriendlyReport }) {
+  return (
+    <>
+      <Card className="p-5 md:p-6">
+        <div className="mb-3 flex items-center gap-2 text-primary">
+          <Sparkles className="h-5 w-5" />
+          <h2 className="font-display text-xl font-extrabold">{report.titulo}</h2>
+        </div>
+        <p className="text-sm leading-7 text-foreground/85 md:text-base">{report.resumo_executivo}</p>
+      </Card>
 
-  if (block.startsWith("# ")) {
-    return (
-      <h1 className="font-display text-2xl font-extrabold tracking-normal text-foreground md:text-3xl">
-        {renderInline(block.replace(/^#\s+/, ""))}
-      </h1>
-    );
-  }
+      <Card className="p-5 md:p-6">
+        <h2 className="font-display text-xl font-extrabold">Pontos de atencao</h2>
+        {report.pontos_atencao.length === 0 ? (
+          <p className="mt-3 text-sm text-muted-foreground">Nao foram encontrados alertas relevantes.</p>
+        ) : (
+          <div className="mt-4 space-y-3">
+            {report.pontos_atencao.map((point, index) => (
+              <div key={`${point.item}-${point.tributo}-${index}`} className="rounded-lg border border-border bg-secondary/40 p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  {point.item && <Badge variant="outline">Item {point.item}</Badge>}
+                  {point.tributo && <Badge variant="outline">{point.tributo}</Badge>}
+                  <StatusBadge status={point.status} />
+                </div>
+                <p className="mt-2 text-sm leading-6">{point.mensagem}</p>
+                {(point.declarado || point.correto || point.diferenca) && (
+                  <div className="mt-3 grid gap-3 text-sm md:grid-cols-3">
+                    <MiniBox label="Declarado" value={point.declarado} />
+                    <MiniBox label="Correto esperado" value={point.correto} />
+                    <MiniBox label="Diferenca" value={point.diferenca} />
+                  </div>
+                )}
+                {point.fonte && <p className="mt-3 text-xs text-muted-foreground">{point.fonte}</p>}
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
 
-  const lines = block.split("\n").map((line) => line.trim()).filter(Boolean);
-  const isList = lines.every((line) => /^[-*]\s+/.test(line));
-
-  if (isList) {
-    return (
-      <ul className="space-y-2 rounded-lg border border-border bg-secondary/40 p-4">
-        {lines.map((line, index) => (
-          <li key={`${index}-${line}`} className="flex gap-3">
-            <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
-            <span>{renderInline(line.replace(/^[-*]\s+/, ""))}</span>
-          </li>
+      <div className="space-y-4">
+        <h2 className="font-display text-2xl font-extrabold">Itens analisados</h2>
+        {report.itens.map((item) => (
+          <FriendlyItemCard key={item.numero_item} item={item} />
         ))}
-      </ul>
-    );
-  }
+      </div>
 
-  return (
-    <p className="rounded-lg bg-background/80 text-foreground/90">
-      {renderInline(block.replace(/\n/g, " "))}
-    </p>
+      <Card className="p-5 md:p-6">
+        <h2 className="font-display text-xl font-extrabold">Fontes utilizadas</h2>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {report.fontes.map((source) =>
+            source.url ? (
+              <a
+                key={`${source.titulo}-${source.url}`}
+                href={source.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 rounded-lg border border-border bg-secondary/40 px-3 py-2 text-xs font-medium text-primary hover:bg-primary-soft"
+              >
+                <FileText className="h-3.5 w-3.5" />
+                {source.titulo}
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            ) : (
+              <span key={source.titulo} className="rounded-lg border border-border bg-secondary/40 px-3 py-2 text-xs font-medium">
+                {source.titulo}
+              </span>
+            ),
+          )}
+        </div>
+        <p className="mt-5 text-xs text-muted-foreground">{report.observacao}</p>
+      </Card>
+    </>
   );
 }
 
-function renderInline(text: string) {
-  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g);
+function FriendlyItemCard({ item }: { item: FriendlyItemReport }) {
+  return (
+    <Card className="overflow-hidden shadow-soft">
+      <div className="border-b border-border/60 bg-gradient-card p-5">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline">Item {item.numero_item}</Badge>
+        </div>
+        <h3 className="mt-3 font-display text-lg font-bold">{item.titulo}</h3>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">{item.resumo}</p>
+      </div>
+      <div className="divide-y divide-border">
+        {item.tributos.map((tax) => (
+          <TaxRow key={tax.tributo} tax={tax} />
+        ))}
+      </div>
+    </Card>
+  );
+}
 
-  return parts.map((part, index) => {
-    if (part.startsWith("**") && part.endsWith("**")) {
-      return <strong key={index}>{part.slice(2, -2)}</strong>;
-    }
+function TaxRow({ tax }: { tax: FriendlyTaxReport }) {
+  return (
+    <div className="grid gap-4 p-5 lg:grid-cols-[120px_1fr]">
+      <div>
+        <div className="font-bold">{tax.tributo}</div>
+        <StatusBadge status={tax.status} className="mt-2" />
+      </div>
+      <div>
+        <p className="text-sm leading-6">{tax.explicacao}</p>
+        {(tax.declarado || tax.correto || tax.diferenca) && (
+          <div className="mt-3 grid gap-3 text-sm md:grid-cols-3">
+            <MiniBox label="Declarado" value={tax.declarado} />
+            <MiniBox label="Correto esperado" value={tax.correto} />
+            <MiniBox label="Diferenca" value={tax.diferenca} />
+          </div>
+        )}
+        {tax.fonte && <p className="mt-3 text-xs text-muted-foreground">{tax.fonte}</p>}
+      </div>
+    </div>
+  );
+}
 
-    if (part.startsWith("`") && part.endsWith("`")) {
-      return (
-        <code key={index} className="rounded bg-muted px-1.5 py-0.5 font-mono text-sm">
-          {part.slice(1, -1)}
-        </code>
-      );
-    }
+function MiniBox({ label, value }: { label: string; value: string | null }) {
+  if (!value) return null;
+  return (
+    <div className="rounded-md bg-background p-3">
+      <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{label}</div>
+      <div className="mt-1 font-medium">{value}</div>
+    </div>
+  );
+}
 
-    const link = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-    if (link) {
-      return (
-        <a
-          key={index}
-          href={link[2]}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1 font-medium text-primary underline-offset-4 hover:underline"
-        >
-          {link[1]}
-          <FileText className="h-3.5 w-3.5" />
-        </a>
-      );
-    }
+function StatusBadge({ status, className = "" }: { status: string; className?: string }) {
+  const config = statusConfig[status as keyof typeof statusConfig] || {
+    label: status,
+    className: "bg-secondary text-muted-foreground border-border",
+  };
+  return (
+    <Badge variant="outline" className={`${config.className} ${className}`}>
+      {config.label}
+    </Badge>
+  );
+}
 
-    return <span key={index}>{part}</span>;
+function buildMarkdown(report: FriendlyReport) {
+  const lines = [`# ${report.titulo}`, "", report.resumo_executivo, "", "## Pontos de atencao", ""];
+
+  if (report.pontos_atencao.length === 0) {
+    lines.push("Nao foram encontrados alertas relevantes.", "");
+  } else {
+    report.pontos_atencao.forEach((point) => {
+      lines.push(`- ${point.item ? `Item ${point.item} - ` : ""}${point.tributo || ""}: ${point.mensagem}`);
+      if (point.declarado) lines.push(`  - Declarado: ${point.declarado}`);
+      if (point.correto) lines.push(`  - Correto esperado: ${point.correto}`);
+      if (point.diferenca) lines.push(`  - Diferenca: ${point.diferenca}`);
+      if (point.fonte) lines.push(`  - Fonte: ${point.fonte}`);
+    });
+    lines.push("");
+  }
+
+  lines.push("## Itens analisados", "");
+  report.itens.forEach((item) => {
+    lines.push(`### Item ${item.numero_item} - ${item.titulo}`, "", item.resumo, "");
+    item.tributos.forEach((tax) => {
+      lines.push(`- **${tax.tributo} (${tax.status})**: ${tax.explicacao}`);
+      if (tax.declarado) lines.push(`  - Declarado: ${tax.declarado}`);
+      if (tax.correto) lines.push(`  - Correto esperado: ${tax.correto}`);
+      if (tax.diferenca) lines.push(`  - Diferenca: ${tax.diferenca}`);
+      if (tax.fonte) lines.push(`  - Fonte: ${tax.fonte}`);
+    });
+    lines.push("");
   });
+
+  lines.push("## Fontes utilizadas", "");
+  report.fontes.forEach((source) => {
+    lines.push(`- ${source.url ? `[${source.titulo}](${source.url})` : source.titulo}`);
+  });
+  lines.push("", "## Observacao", "", report.observacao, "");
+  return lines.join("\n");
 }
 
 export default Analise;
